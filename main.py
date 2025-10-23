@@ -5,11 +5,11 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from openai import OpenAI
 from keep_alive import start_keep_alive
+import aiohttp
 
 # شروع سرویس نگه داشتن ربات فعال
 start_keep_alive()
 
-# بقیه کد main.py مانند قبل باقی می‌ماند...
 # لاگینگ برای دیدن خطاها
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -23,6 +23,10 @@ client = OpenAI(
     api_key=os.environ["HF_TOKEN"],
 )
 
+# ایجاد یک semaphor برای محدود کردن تعداد درخواست‌های همزمان به API
+# این کار از محدودیت‌های API جلوگیری می‌کند
+semaphore = asyncio.Semaphore(5)  # حداکثر 5 درخواست همزمان
+
 # تابع برای پاسخ به دستور /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """ارسال پیام خوشامدگویی when the command /start is issued."""
@@ -30,6 +34,36 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_html(
         f"سلام {user.mention_html()}! من یک ربات هوشمند هستم. هر سوالی دارید بپرسید.",
     )
+
+# تابع برای ارتباط با API به صورت غیرهمزمان
+async def get_ai_response(user_message: str) -> str:
+    """دریافت پاسخ از مدل هوش مصنوعی به صورت غیرهمزمان"""
+    async with semaphore:  # محدود کردن تعداد درخواست‌های همزمان
+        try:
+            # استفاده از aiohttp برای درخواست غیرهمزمان
+            async with aiohttp.ClientSession() as session:
+                headers = {
+                    "Authorization": f"Bearer {os.environ['HF_TOKEN']}",
+                    "Content-Type": "application/json"
+                }
+                data = {
+                    "model": "huihui-ai/gemma-3-27b-it-abliterated:featherless-ai",
+                    "messages": [{"role": "user", "content": user_message}],
+                    "temperature": 0.7,
+                    "top_p": 0.95,
+                    "stream": False
+                }
+                
+                async with session.post(
+                    "https://router.huggingface.co/v1/chat/completions",
+                    headers=headers,
+                    json=data
+                ) as response:
+                    result = await response.json()
+                    return result["choices"][0]["message"]["content"]
+        except Exception as e:
+            logger.error(f"Error while getting AI response: {e}")
+            raise
 
 # تابع اصلی برای پردازش پیام‌های متنی کاربر
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -41,22 +75,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
     try:
-        # ساخت درخواست به مدل هوش مصنوعی
-        response = client.chat.completions.create(
-            model="huihui-ai/gemma-3-27b-it-abliterated:featherless-ai",
-            messages=[
-                {
-                    "role": "user",
-                    "content": user_message,
-                }
-            ],
-            temperature=0.7,
-            top_p=0.95,
-            stream=False,  # تغییر از True به False
-        )
-
+        # دریافت پاسخ به صورت غیرهمزمان
+        response_text = await get_ai_response(user_message)
+        
         # ارسال پاسخ به کاربر
-        await update.message.reply_text(response.choices[0].message.content)
+        await update.message.reply_text(response_text)
 
     except Exception as e:
         logger.error(f"Error while processing message: {e}")
@@ -70,8 +93,13 @@ def main() -> None:
         logger.error("BOT_TOKEN not set in environment variables!")
         return
 
-    # ساخت اپلیکیشن
-    application = Application.builder().token(token).build()
+    # ساخت اپلیکیشن با افزایش تعداد کارگران همزمان
+    application = (
+        Application.builder()
+        .token(token)
+        .concurrent_updates(True)  # فعال‌سازی پردازش همزمان به‌روزرسانی‌ها
+        .build()
+    )
 
     # اضافه کردن هندلر برای دستور /start
     application.add_handler(CommandHandler("start", start))
