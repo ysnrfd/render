@@ -2,3 +2,4 @@ python-telegram-bot[webhooks]
 openai
 requests
 huggingface_hub
+aiohttp
