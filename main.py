@@ -55,7 +55,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 ],
                 temperature=0.7,
                 top_p=0.95,
-                stream=True,  # استفاده از استریم
+                stream=False,  # استفاده از استریم
             )
 
             # ارسال پیام اولیه برای شروع استریم
