@@ -4,7 +4,7 @@ from telegram.ext import Application, MessageHandler, filters
 from huggingface_hub import InferenceClient
 
 # 🔒 توکن‌ها را از متغیرهای محیطی بخوانید
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_TOKEN = "8125153361:AAFWn6YGjI1rc8jitghto1ZY3NN8z-QsN5E"
 HF_API_KEY = os.getenv("HF_API_KEY")
 
 # 🤖 تنظیمات مدل هوش مصنوعی (بدون پارامتر provider)
