@@ -1,11 +1,12 @@
 services:
   - type: web
-    name: ai-telegram-bot
-    runtime: python
-    envVars:
-      - key: TELEGRAM_TOKEN
-        generateValue: true  # Render خودش مقدار امن تولید می‌کند
-      - key: HF_API_KEY
-        generateValue: true
+    name: telegram-ai-bot
+    env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python bot.py
+    startCommand: python main.py
+    plan: free # می‌توانید از پلن رایگان استفاده کنید
+    envVars:
+      - key: BOT_TOKEN
+        sync: false # مقدار این متغیر را باید در داشبورد Render وارد کنید
+      - key: HF_TOKEN
+        sync: false # مقدار این متغیر را نیز در داشبورد Render وارد کنید
