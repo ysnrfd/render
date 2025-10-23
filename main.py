@@ -36,7 +36,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     try:
         # ساخت درخواست به مدل هوش مصنوعی
-        stream = client.chat.completions.create(
+        response = client.chat.completions.create(
             model="huihui-ai/gemma-3-27b-it-abliterated:featherless-ai",
             messages=[
                 {
@@ -44,39 +44,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     "content": user_message,
                 }
             ],
-            temperature=0.5,
-            top_p=0.7,
-            stream=True,
+            temperature=0.7,
+            top_p=0.9,
+            stream=False,  # تغییر از True به False
         )
 
-        # ارسال پاسخ به صورت تکه تکه (streaming) به کاربر
-        current_response = ""
-        # یک پیام اولیه برای شروع ارسال می‌کنیم
-        message = await context.bot.send_message(chat_id=chat_id, text="در حال پردازش...")
-        
-        # برای شمارش تعداد تلاش‌های ویرایش
-        edit_counter = 0
-        # برای ذخیره آخرین محتوای ارسال شده
-        last_sent_content = ""
-        
-        for chunk in stream:
-            # دسترسی صحیح به ویژگی content از شیء delta
-            content = chunk.choices[0].delta.content
-            # این شرط هم مقدار None و هم رشته خالی "" را بررسی می‌کند
-            if content:
-                current_response += content
-                
-                # فقط زمانی پیام را ویرایش می‌کنیم که محتوای جدیدی به آن اضافه شده باشد
-                # و با محتوای قبلی متفاوت باشد
-                if current_response != last_sent_content:
-                    try:
-                        await message.edit_text(current_response)
-                        last_sent_content = current_response
-                        edit_counter += 1
-                    except Exception as edit_error:
-                        # اگر خطای ویرایش رخ داد، آن را نادیده بگیرید و ادامه دهید
-                        logger.warning(f"Edit message error: {edit_error}")
-                        continue
+        # ارسال پاسخ به کاربر
+        await update.message.reply_text(response.choices[0].message.content)
 
     except Exception as e:
         logger.error(f"Error while processing message: {e}")
