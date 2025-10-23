@@ -3,9 +3,8 @@ import logging
 import asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from openai import OpenAI
+from openai import AsyncOpenAI  # استفاده از کلاینت غیرهمزمان
 from keep_alive import start_keep_alive
-import aiohttp
 
 # شروع سرویس نگه داشتن ربات فعال
 start_keep_alive()
@@ -16,99 +15,109 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# کلاینت OpenAI (HuggingFace)
-# توکن از متغیر محیطی خوانده می‌شود
-client = OpenAI(
+# کلاینت OpenAI (HuggingFace) - نسخه غیرهمزمان
+client = AsyncOpenAI(
     base_url="https://router.huggingface.co/v1",
     api_key=os.environ["HF_TOKEN"],
 )
 
-# --- دیکشنری‌های جدید برای مدیریت وضعیت کاربران ---
+# --- دیکشنری برای مدیریت وظایف پس‌زمینه هر کاربر ---
+# این دیکشنری شناسه کاربر را به وظیفه (Task) در حال اجرا متصل می‌کند
+# {user_id: asyncio.Task}
+user_tasks = {}
 
-# دیکشنری برای نگهداری وضعیت پردازش هر کاربر
-# {user_id: True/False} -> True یعنی در حال پردازش
-user_processing_state = {}
+# --- توابع کمکی برای مدیریت وظایف ---
 
-# دیکشنری برای نگهداری قفل هر کاربر برای جلوگیری از ریس‌های مسابقه‌ای (race condition)
-# این تضمین می‌کند که دو پردازش همزمان برای یک کاربر شروع نشود
-user_locks = {}
+def _cleanup_task(task: asyncio.Task, user_id: int):
+    """
+    این تابع پس از اتمام یک وظیفه (با موفقیت، خطا یا لغو) فراخوانی می‌شود
+    تا ورودی مربوط به آن کاربر را از دیکشنری پاک کند.
+    """
+    if user_id in user_tasks and user_tasks[user_id] == task:
+        del user_tasks[user_id]
+        logger.info(f"Cleaned up finished task for user {user_id}.")
 
-# --- توابع ربات ---
+    # اگر وظیفه به دلیل خطایی که مدیریت نشده متوقف شده، آن را لاگ کن
+    if task.exception():
+        logger.error(f"Background task for user {user_id} failed: {task.exception()}")
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """ارسال پیام خوشامدگویی when the command /start is issued."""
-    user = update.effective_user
-    await update.message.reply_html(
-        f"سلام {user.mention_html()}! من یک ربات هوشمند هستم. هر سوالی دارید بپرسید.\n\n"
-        f"توجه: لطفاً تا دریافت پاسخ کامل، سوال جدیدی نپرسید.",
-    )
 
-async def get_ai_response(user_message: str) -> str:
-    """دریافت پاسخ از مدل هوش مصنوعی به صورت غیرهمزمان"""
-    # استفاده از کلاینت OpenAI که می‌تواند غیرهمزمان باشد
-    # اما برای اطمینان از عدم مسدود بودن، می‌توان از aiohttp هم استفاده کرد
-    # در اینجا ما از کلاینت اصلی استفاده می‌کنیم که ساده‌تر است
-    try:
-        response = client.chat.completions.create(
-            model="huihui-ai/gemma-3-27b-it-abliterated:featherless-ai",
-            messages=[{"role": "user", "content": user_message}],
-            temperature=0.7,
-            top_p=0.95,
-            stream=False,
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        logger.error(f"Error calling AI API: {e}")
-        raise
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """پاسخ به پیام کاربر با استفاده از هوش مصنوعی و جلوگیری از درخواست‌های همزمان."""
-    user_id = update.effective_user.id
+async def _process_user_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    این تابع اصلی پردازش درخواست است که در پس‌زمینه اجرا می‌شود.
+    """
     chat_id = update.effective_chat.id
     user_message = update.message.text
-
-    # --- مکانیزم قفل‌گذاری ---
-    # اگر قفلی برای این کاربر وجود ندارد، یک قفل جدید بساز
-    if user_id not in user_locks:
-        user_locks[user_id] = asyncio.Lock()
-
-    # قفل این کاربر را بگیر تا فقط یک پردازش برای او همزمان انجام شود
-    async with user_locks[user_id]:
-        # بررسی کن که آیا این کاربر در حال حاضر درخواست دیگری در حال پردازش دارد یا نه
-        if user_processing_state.get(user_id, False):
-            # اگر در حال پردازش بود، به او اخطار بده و از تابع خارج شو
-            await update.message.reply_text(
-                "⏳ لطفاً صبر کنید! درخواست قبلی شما در حال پردازش است. "
-                "پاسخ آن را دریافت کنید و سپس سوال جدیدی بپرسید."
-            )
-            return
-
-        # اگر کاربر مشغول نبود، وضعیت او را به 'در حال پردازش' تغییر بده
-        user_processing_state[user_id] = True
-
-    # --- خارج از بلوک قفل ---
-    # از اینجا به بعد، درخواست اصلی پردازش می‌شود.
-    # قفل آزاد شده و درخواست‌های بعدی همین کاربر در صف انتظار برای گرفتن قفل می‌مانند
-    # و با دیدن وضعیت True، رد خواهند شد.
+    user_id = update.effective_user.id
 
     try:
         # به کاربر اطلاع دهید که ربات در حال پردازش است
         await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
-        # دریافت پاسخ به صورت غیرهمزمان
-        response_text = await get_ai_response(user_message)
+        # استفاده از asyncio.wait_for برای ایجاد تایم‌اوت (مثلا ۶۰ ثانیه)
+        response = await asyncio.wait_for(
+            client.chat.completions.create(
+                model="huihui-ai/gemma-3-27b-it-abliterated:featherless-ai",
+                messages=[{"role": "user", "content": user_message}],
+                temperature=0.7,
+                top_p=0.95,
+                stream=False,
+            ),
+            timeout=60.0
+        )
 
         # ارسال پاسخ به کاربر
-        await update.message.reply_text(response_text)
+        await update.message.reply_text(response.choices[0].message.content)
 
+    except asyncio.TimeoutError:
+        # اگر درخواست بیش از حد طول کشید
+        logger.warning(f"Request timed out for user {user_id}.")
+        await update.message.reply_text(
+            "⏱️ پردازش درخواست شما بیش از حد طولانی شد و لغو گردید. لطفاً دوباره تلاش کنید."
+        )
     except Exception as e:
+        # برای سایر خطاها
         logger.error(f"Error while processing message for user {user_id}: {e}")
-        await update.message.reply_text("متاسفانه در پردازش درخواست شما مشکلی پیش آمد. لطفاً دوباره تلاش کنید.")
+        await update.message.reply_text(
+            "❌ متاسفانه در پردازش درخواست شما مشکلی پیش آمد. لطفاً دوباره تلاش کنید."
+        )
 
-    finally:
-        # **بسیار مهم**: در هر صورت (موفقیت یا خطا)، وضعیت کاربر را به 'آزاد' تغییر بده
-        # تا بتواند درخواست بعدی خود را ارسال کند.
-        user_processing_state[user_id] = False
+# --- هندلرهای اصلی ربات ---
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """ارسال پیام خوشامدگویی."""
+    user = update.effective_user
+    await update.message.reply_html(
+        f"سلام {user.mention_html()}! 🤖\n\n"
+        f"من یک ربات هوشمند هستم. هر سوالی دارید بپرسید.\n"
+        f"توجه: درخواست‌های شما به صورت همزمان پردازش می‌شوند. "
+        f"اگر درخواست جدیدی بفرستید، پردازش قبلی لغو خواهد شد.",
+    )
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    این هندلر پیام‌ها را دریافت کرده و وظیفه پردازش را به پس‌زمینه محول می‌کند.
+    این تابع بسیار سریع اجرا می‌شود و ربات را گیر نمی‌اندازد.
+    """
+    user_id = update.effective_user.id
+
+    # بررسی اینکه آیا وظیفه‌ای برای این کاربر در حال اجراست یا نه
+    if user_id in user_tasks and not user_tasks[user_id].done():
+        # یک وظیفه در حال اجراست. آن را لغو کرده و برای درخواست جدید شروع می‌کنیم.
+        # این کار باعث می‌شود ربات همیشه به آخرین پیام کاربر پاسخ دهد.
+        user_tasks[user_id].cancel()
+        logger.info(f"Cancelled previous task for user {user_id} to start a new one.")
+
+    # ایجاد یک وظیفه جدید در پس‌زمینه برای پردازش درخواست
+    # asyncio.create_task تابع را بدون منتظر ماندن برای اتمام آن اجرا می‌کند
+    task = asyncio.create_task(_process_user_request(update, context))
+
+    # ذخیره وظیفه جدید برای کاربر
+    user_tasks[user_id] = task
+
+    # اضافه کردن یک تابع callback که پس از اتمام وظیفه اجرا می‌شود
+    # این تابع مسئول پاکسازی دیکشنری است
+    task.add_done_callback(lambda t: _cleanup_task(t, user_id))
 
 def main() -> None:
     """تابع اصلی برای اجرای ربات."""
@@ -117,8 +126,7 @@ def main() -> None:
         logger.error("BOT_TOKEN not set in environment variables!")
         return
 
-    # ساخت اپلیکیشن با فعال‌سازی پردازش همزمان به‌روزرسانی‌ها
-    # این کار به ربات اجازه می‌دهد تا کاربران *مختلف* را به صورت همزمان پردازش کند
+    # ساخت اپلیکیشن با فعال‌سازی پردازش همزمان به‌روزرسانی‌ها برای کاربران مختلف
     application = (
         Application.builder()
         .token(token)
