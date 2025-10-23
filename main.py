@@ -55,9 +55,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         message = await context.bot.send_message(chat_id=chat_id, text="در حال پردازش...")
         
         for chunk in stream:
-            # با استفاده از .get() از خطای احتمالی جلوگیری می‌کنیم
-            # و با شرط if content: مطمئن می‌شویم که محتوایی برای نمایش وجود دارد
-            content = chunk.choices[0].delta.get("content")
+            # دسترسی صحیح به ویژگی content از شیء delta
+            content = chunk.choices[0].delta.content
+            # این شرط هم مقدار None و هم رشته خالی "" را بررسی می‌کند
             if content:
                 current_response += content
                 # فقط زمانی پیام را ویرایش می‌کنیم که محتوای جدیدی به آن اضافه شده باشد
