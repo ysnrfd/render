@@ -5,7 +5,7 @@ from huggingface_hub import InferenceClient
 
 # 🔒 توکن‌ها را از متغیرهای محیطی بخوانید
 TELEGRAM_TOKEN = "8125153361:AAFWn6YGjI1rc8jitghto1ZY3NN8z-QsN5E"
-HF_API_KEY = os.getenv("HF_API_KEY")
+HF_API_KEY = "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"
 
 # 🤖 تنظیمات مدل هوش مصنوعی (بدون پارامتر provider)
 client = InferenceClient(
