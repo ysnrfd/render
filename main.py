@@ -54,7 +54,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     }
                 ],
                 temperature=0.7,
-                top_p=0.9,
+                top_p=0.95,
                 stream=True,  # استفاده از استریم
             )
 
@@ -63,13 +63,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             
             # پردازش استریم و به‌روزرسانی پیام
             current_response = ""
+            last_sent_content = ""  # برای جلوگیری از ویرایش تکراری
+            
             for chunk in stream:
                 if hasattr(chunk, 'choices') and chunk.choices:
                     content = chunk.choices[0].delta.content
                     if content:
                         current_response += content
-                        # به‌روزرسانی پیام با محتوای جدید
-                        await message.edit_text(current_response)
+                        
+                        # فقط زمانی پیام را ویرایش کن که محتوای جدید با محتوای قبلی متفاوت باشد
+                        if current_response != last_sent_content:
+                            try:
+                                await message.edit_text(current_response)
+                                last_sent_content = current_response
+                            except Exception as edit_error:
+                                # اگر خطای ویرایش رخ داد، آن را نادیده بگیر و ادامه بده
+                                logger.warning(f"Edit message error: {edit_error}")
+                                continue
             
             # اگر موفق بود، از حلقه خارج شو
             break
