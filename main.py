@@ -1,6 +1,7 @@
 import os
 import logging
 import asyncio
+import httpx  # httpx را برای پیکربندی وارد می‌کنیم
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from openai import AsyncOpenAI
@@ -15,10 +16,28 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# کلاینت OpenAI (HuggingFace) - نسخه غیرهمزمان
+# --- ایجاد یک کلاینت HTTP بهینه‌سازی‌شده برای پایداری و سرعت بیشتر ---
+# این کلاینت به httpx اجازه می‌دهد تا از HTTP/2 استفاده کند و تعداد اتصالات را مدیریت کند
+http_client = httpx.AsyncClient(
+    http2=True,  # فعال‌سازی HTTP/2 برای افزایش سرعت و کارایی
+    limits=httpx.Limits(
+        max_keepalive_connections=20,  # تعداد اتصالاتی که برای استفاده‌های بعدی نگه داشته می‌شوند
+        max_connections=100,  # حداکثر تعداد کل اتصالات همزمان
+        keepalive_expiry=30.0  # مدت زمان نگهداری اتصال بدون استفاده (ثانیه)
+    ),
+    timeout=httpx.Timeout(
+        timeout=60.0,  # تایم‌اوت کلی برای کل درخواست
+        connect=10.0,  # تایم‌اوت برای برقراری اولیه اتصال
+        read=45.0,     # تایم‌اوت برای دریافت پاسخ از سرور
+        write=10.0     # تایم‌اوت برای ارسال درخواست به سرور
+    )
+)
+
+# کلاینت OpenAI (HuggingFace) - با استفاده از کلاینت HTTP سفارشی
 client = AsyncOpenAI(
     base_url="https://router.huggingface.co/v1",
     api_key=os.environ["HF_TOKEN"],
+    http_client=http_client  # معرفی کلاینت سفارشی به OpenAI
 )
 
 # --- دیکشنری برای مدیریت وظایف پس‌زمینه هر کاربر ---
@@ -58,25 +77,23 @@ async def _process_user_request(update: Update, context: ContextTypes.DEFAULT_TY
         # به کاربر اطلاع دهید که ربات در حال پردازش است
         await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
-        # استفاده از asyncio.wait_for برای ایجاد تایم‌اوت (مثلا ۶۰ ثانیه)
-        response = await asyncio.wait_for(
-            client.chat.completions.create(
-                model="huihui-ai/gemma-3-27b-it-abliterated:featherless-ai",
-                messages=[{"role": "user", "content": user_message}],
-                temperature=0.7,
-                top_p=0.95,
-                stream=False,
-            ),
-            timeout=60.0
+        # دیگر نیازی به asyncio.wait_for نیست، زیرا تایم‌اوت در کلاینت HTTP تنظیم شده است
+        response = await client.chat.completions.create(
+            model="huihui-ai/gemma-3-27b-it-abliterated:featherless-ai",
+            messages=[{"role": "user", "content": user_message}],
+            temperature=0.7,
+            top_p=0.95,
+            stream=False,
         )
 
         # ارسال پاسخ به کاربر
         await update.message.reply_text(response.choices[0].message.content)
 
-    except asyncio.TimeoutError:
+    except httpx.TimeoutException:
+        # این خطا زمانی رخ می‌دهد که یکی از تایم‌اوت‌های httpx منقضی شود
         logger.warning(f"Request timed out for user {user_id}.")
         await update.message.reply_text(
-            "⏱️ پردازش درخواست شما بیش از حد طولانی شد و لغو گردید. لطفاً دوباره تلاش کنید."
+            "⏱️ ارتباط با سرور هوش مصنوعی طولانی شد. لطفاً دوباره تلاش کنید."
         )
     except Exception as e:
         # این بلوک خطاهای مختلف از جمله خطاهای API (مانند 503) را مدیریت می‌کند
@@ -108,7 +125,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         # یک وظیفه در حال اجراست. آن را لغو کرده و برای درخواست جدید شروع می‌کنیم.
         user_tasks[user_id].cancel()
         logger.info(f"Cancelled previous task for user {user_id} to start a new one.")
-        # نیازی به ارسال پیام به کاربر نیست، چون "typing" برای درخواست جدید کافی است.
 
     # ایجاد یک وظیفه جدید در پس‌زمینه برای پردازش درخواست
     task = asyncio.create_task(_process_user_request(update, context))
