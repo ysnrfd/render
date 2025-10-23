@@ -13,7 +13,7 @@ def ping_service():
             print(f"Error pinging service: {e}")
         
         # هر 14 دقیقه یک بار پینگ بزن (زیر 15 دقیقه برای جلوگیری از خاموشی)
-        time.sleep(14 * 60)
+        time.sleep(5 * 60)
 
 # شروع ترد پینگ در پس‌زمینه
 def start_keep_alive():
