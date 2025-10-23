@@ -46,19 +46,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             ],
             temperature=0.5,
             top_p=0.7,
-            stream=True, # پاسخ به صورت stream (تکه تکه) دریافت می‌شود
+            stream=True,
         )
 
         # ارسال پاسخ به صورت تکه تکه (streaming) به کاربر
-        # ابتدا یک پیام خالی می‌فرستیم و بعد آن را ویرایش می‌کنیم
         current_response = ""
-        message = await context.bot.send_message(chat_id=chat_id, text="...")
+        # یک پیام اولیه برای شروع ارسال می‌کنیم
+        message = await context.bot.send_message(chat_id=chat_id, text="در حال پردازش...")
         
         for chunk in stream:
-            if chunk.choices[0].delta.content is not None:
-                content = chunk.choices[0].delta.content
+            # با استفاده از .get() از خطای احتمالی جلوگیری می‌کنیم
+            # و با شرط if content: مطمئن می‌شویم که محتوایی برای نمایش وجود دارد
+            content = chunk.choices[0].delta.get("content")
+            if content:
                 current_response += content
-                # پیام قبلی را با پاسخ جدید ویرایش می‌کنیم
+                # فقط زمانی پیام را ویرایش می‌کنیم که محتوای جدیدی به آن اضافه شده باشد
                 await message.edit_text(current_response)
 
     except Exception as e:
