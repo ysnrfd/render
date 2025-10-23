@@ -50,15 +50,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 }
             ],
             temperature=0.7,
-            top_p=0.95,
+            top_p=0.9,
             stream=False,  # تغییر از True به False
         )
 
-        # استخراج متن پاسخ
-        response_text = ""
-        for chunk in response:
-            if hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content:
-                response_text += chunk.choices[0].delta.content
+        # بررسی نوع پاسخ و استخراج متن
+        if isinstance(response, str):
+            # اگر پاسخ مستقیماً یک رشته است
+            response_text = response
+        else:
+            # اگر پاسخ یک آبجکت است، محتوا را استخراج می‌کنیم
+            response_text = ""
+            for chunk in response:
+                if hasattr(chunk, 'choices') and chunk.choices:
+                    response_text += chunk.choices[0].delta.content
+                elif hasattr(chunk, 'content'):
+                    response_text += chunk.content
+                elif isinstance(chunk, str):
+                    response_text += chunk
 
         # ارسال پاسخ به کاربر
         await update.message.reply_text(response_text)
