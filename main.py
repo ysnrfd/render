@@ -3,23 +3,22 @@ import logging
 import asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from openai import OpenAI
+from huggingface_hub import InferenceClient
 from keep_alive import start_keep_alive
 
 # شروع سرویس نگه داشتن ربات فعال
 start_keep_alive()
 
-# بقیه کد main.py مانند قبل باقی می‌ماند...
 # لاگینگ برای دیدن خطاها
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# کلاینت OpenAI (HuggingFace)
+# کلاینت HuggingFace Inference
 # توکن از متغیر محیطی خوانده می‌شود
-client = OpenAI(
-    base_url="https://router.huggingface.co/v1",
+client = InferenceClient(
+    provider="featherless-ai",
     api_key=os.environ["HF_TOKEN"],
 )
 
@@ -43,7 +42,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     try:
         # ساخت درخواست به مدل هوش مصنوعی
         response = client.chat.completions.create(
-            model="huihui-ai/gemma-3-27b-it-abliterated:featherless-ai",
+            model="huihui-ai/gemma-3-27b-it-abliterated",
             messages=[
                 {
                     "role": "user",
@@ -51,12 +50,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 }
             ],
             temperature=0.7,
-            top_p=0.9,
+            top_p=0.95,
             stream=False,  # تغییر از True به False
         )
 
+        # استخراج متن پاسخ
+        response_text = ""
+        for chunk in response:
+            if hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content:
+                response_text += chunk.choices[0].delta.content
+
         # ارسال پاسخ به کاربر
-        await update.message.reply_text(response.choices[0].message.content)
+        await update.message.reply_text(response_text)
 
     except Exception as e:
         logger.error(f"Error while processing message: {e}")
