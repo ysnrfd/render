@@ -39,42 +39,63 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # به کاربر اطلاع دهید که ربات در حال پردازش است
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
-    try:
-        # ساخت درخواست به مدل هوش مصنوعی
-        response = client.chat.completions.create(
-            model="huihui-ai/gemma-3-27b-it-abliterated",
-            messages=[
-                {
-                    "role": "user",
-                    "content": user_message,
-                }
-            ],
-            temperature=0.7,
-            top_p=0.9,
-            stream=False,  # تغییر از True به False
-        )
+    max_retries = 3
+    retry_count = 0
+    
+    while retry_count < max_retries:
+        try:
+            # ساخت درخواست به مدل هوش مصنوعی با استریم
+            stream = client.chat.completions.create(
+                model="huihui-ai/gemma-3-27b-it-abliterated",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": user_message,
+                    }
+                ],
+                temperature=0.7,
+                top_p=0.9,
+                stream=True,  # استفاده از استریم
+            )
 
-        # بررسی نوع پاسخ و استخراج متن
-        if isinstance(response, str):
-            # اگر پاسخ مستقیماً یک رشته است
-            response_text = response
-        else:
-            # اگر پاسخ یک آبجکت است، محتوا را استخراج می‌کنیم
-            response_text = ""
-            for chunk in response:
+            # ارسال پیام اولیه برای شروع استریم
+            message = await context.bot.send_message(chat_id=chat_id, text="در حال پردازش...")
+            
+            # پردازش استریم و به‌روزرسانی پیام
+            current_response = ""
+            for chunk in stream:
                 if hasattr(chunk, 'choices') and chunk.choices:
-                    response_text += chunk.choices[0].delta.content
-                elif hasattr(chunk, 'content'):
-                    response_text += chunk.content
-                elif isinstance(chunk, str):
-                    response_text += chunk
-
-        # ارسال پاسخ به کاربر
-        await update.message.reply_text(response_text)
-
-    except Exception as e:
-        logger.error(f"Error while processing message: {e}")
-        await update.message.reply_text("متاسفانه در پردازش درخواست شما مشکلی پیش آمد. لطفاً دوباره تلاش کنید.")
+                    content = chunk.choices[0].delta.content
+                    if content:
+                        current_response += content
+                        # به‌روزرسانی پیام با محتوای جدید
+                        await message.edit_text(current_response)
+            
+            # اگر موفق بود، از حلقه خارج شو
+            break
+            
+        except Exception as e:
+            retry_count += 1
+            error_message = str(e)
+            
+            # بررسی خطای 503
+            if "503" in error_message or "Service Temporarily Unavailable" in error_message:
+                logger.warning(f"Service unavailable (attempt {retry_count}/{max_retries}): {e}")
+                
+                if retry_count < max_retries:
+                    # استفاده از exponential backoff
+                    delay = 2 * (2 ** (retry_count - 1))
+                    await update.message.reply_text(f"سرویس موقتاً در دسترس نیست. تلاش مجدد در {delay} ثانیه...")
+                    await asyncio.sleep(delay)
+                else:
+                    await update.message.reply_text("متاسفانه سرویس هوش مصنوعی در حال حاضر در دسترس نیست. لطفاً چند دقیقه دیگر دوباره تلاش کنید.")
+            else:
+                logger.error(f"Error while processing message (attempt {retry_count}/{max_retries}): {e}")
+                
+                if retry_count < max_retries:
+                    await asyncio.sleep(2)
+                else:
+                    await update.message.reply_text("متاسفانه در پردازش درخواست شما مشکلی پیش آمد. لطفاً دوباره تلاش کنید.")
 
 def main() -> None:
     """تابع اصلی برای اجرای ربات."""
