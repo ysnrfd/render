@@ -3,7 +3,7 @@ import logging
 import asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from openai import AsyncOpenAI  # استفاده از کلاینت غیرهمزمان
+from openai import AsyncOpenAI
 from keep_alive import start_keep_alive
 
 # شروع سرویس نگه داشتن ربات فعال
@@ -22,7 +22,6 @@ client = AsyncOpenAI(
 )
 
 # --- دیکشنری برای مدیریت وظایف پس‌زمینه هر کاربر ---
-# این دیکشنری شناسه کاربر را به وظیفه (Task) در حال اجرا متصل می‌کند
 # {user_id: asyncio.Task}
 user_tasks = {}
 
@@ -37,9 +36,14 @@ def _cleanup_task(task: asyncio.Task, user_id: int):
         del user_tasks[user_id]
         logger.info(f"Cleaned up finished task for user {user_id}.")
 
-    # اگر وظیفه به دلیل خطایی که مدیریت نشده متوقف شده، آن را لاگ کن
-    if task.exception():
-        logger.error(f"Background task for user {user_id} failed: {task.exception()}")
+    # بررسی خطاها، اما با نادیده گرفتن CancelledError که یک رفتار طبیعی است
+    try:
+        exception = task.exception()
+        if exception:
+            logger.error(f"Background task for user {user_id} failed with an unexpected error: {exception}")
+    except asyncio.CancelledError:
+        # این خطا طبیعی است و نیازی به لاگ کردن به عنوان خطا ندارد
+        logger.info(f"Task for user {user_id} was successfully cancelled by a newer request.")
 
 
 async def _process_user_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -70,13 +74,12 @@ async def _process_user_request(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text(response.choices[0].message.content)
 
     except asyncio.TimeoutError:
-        # اگر درخواست بیش از حد طول کشید
         logger.warning(f"Request timed out for user {user_id}.")
         await update.message.reply_text(
             "⏱️ پردازش درخواست شما بیش از حد طولانی شد و لغو گردید. لطفاً دوباره تلاش کنید."
         )
     except Exception as e:
-        # برای سایر خطاها
+        # این بلوک خطاهای مختلف از جمله خطاهای API (مانند 503) را مدیریت می‌کند
         logger.error(f"Error while processing message for user {user_id}: {e}")
         await update.message.reply_text(
             "❌ متاسفانه در پردازش درخواست شما مشکلی پیش آمد. لطفاً دوباره تلاش کنید."
@@ -97,26 +100,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     این هندلر پیام‌ها را دریافت کرده و وظیفه پردازش را به پس‌زمینه محول می‌کند.
-    این تابع بسیار سریع اجرا می‌شود و ربات را گیر نمی‌اندازد.
     """
     user_id = update.effective_user.id
 
     # بررسی اینکه آیا وظیفه‌ای برای این کاربر در حال اجراست یا نه
     if user_id in user_tasks and not user_tasks[user_id].done():
         # یک وظیفه در حال اجراست. آن را لغو کرده و برای درخواست جدید شروع می‌کنیم.
-        # این کار باعث می‌شود ربات همیشه به آخرین پیام کاربر پاسخ دهد.
         user_tasks[user_id].cancel()
         logger.info(f"Cancelled previous task for user {user_id} to start a new one.")
+        # نیازی به ارسال پیام به کاربر نیست، چون "typing" برای درخواست جدید کافی است.
 
     # ایجاد یک وظیفه جدید در پس‌زمینه برای پردازش درخواست
-    # asyncio.create_task تابع را بدون منتظر ماندن برای اتمام آن اجرا می‌کند
     task = asyncio.create_task(_process_user_request(update, context))
 
     # ذخیره وظیفه جدید برای کاربر
     user_tasks[user_id] = task
 
     # اضافه کردن یک تابع callback که پس از اتمام وظیفه اجرا می‌شود
-    # این تابع مسئول پاکسازی دیکشنری است
     task.add_done_callback(lambda t: _cleanup_task(t, user_id))
 
 def main() -> None:
