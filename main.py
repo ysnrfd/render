@@ -1,9 +1,15 @@
 import os
 import logging
+import asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from openai import OpenAI
+from keep_alive import start_keep_alive
 
+# شروع سرویس نگه داشتن ربات فعال
+start_keep_alive()
+
+# بقیه کد main.py مانند قبل باقی می‌ماند...
 # لاگینگ برای دیدن خطاها
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
