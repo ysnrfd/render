@@ -10,18 +10,32 @@ from openai import AsyncOpenAI
 from keep_alive import start_keep_alive
 
 # --- تغییرات جدید ---
-# وارد کردن پنل ادمین
+# وارد کردن مدیر داده‌ها و پنل ادمین
+import data_manager
 import admin_panel
 
 # شروع سرویس نگه داشتن ربات فعال
 start_keep_alive()
 
-# لاگینگ برای دیدن خطاها
+# --- بهبود لاگینگ ---
+# استفاده از مسیر مطلق از data_manager
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO,
-    filename='bot.log', filemode='a' # لاگ‌ها را در فایل bot.log ذخیره می‌کند
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", 
+    level=logging.INFO,
+    filename=data_manager.LOG_FILE, 
+    filemode='a'
 )
 logger = logging.getLogger(__name__)
+
+# بررسی اینکه آیا لاگ می‌تواند نوشته شود یا نه
+try:
+    with open(data_manager.LOG_FILE, 'a') as f:
+        f.write("")
+except Exception as e:
+    print(f"FATAL: Could not write to log file at {data_manager.LOG_FILE}. Error: {e}")
+    # در صورت عدم امکان نوشتن لاگ، به کنسول چاپ می‌کنیم
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+
 
 # --- ایجاد یک کلاینت HTTP بهینه‌سازی‌شده ---
 http_client = httpx.AsyncClient(
@@ -40,10 +54,6 @@ client = AsyncOpenAI(
 # --- دیکشنری برای مدیریت وظایف پس‌زمینه هر کاربر ---
 user_tasks = {}
 
-# --- تغییرات جدید ---
-# بارگذاری داده‌های ربات (کاربران، آمار و ...)
-bot_data = admin_panel.load_data()
-
 # --- توابع کمکی برای مدیریت وظایف ---
 def _cleanup_task(task: asyncio.Task, user_id: int):
     if user_id in user_tasks and user_tasks[user_id] == task:
@@ -52,29 +62,9 @@ def _cleanup_task(task: asyncio.Task, user_id: int):
     try:
         exception = task.exception()
         if exception:
-            logger.error(f"Background task for user {user_id} failed with an unexpected error: {exception}")
+            logger.error(f"Background task for user {user_id} failed: {exception}")
     except asyncio.CancelledError:
-        logger.info(f"Task for user {user_id} was successfully cancelled by a newer request.")
-
-# --- تغییرات جدید ---
-def update_user_stats(user_id: int, user_data: dict):
-    """آمار کاربر را پس از هر پیام به‌روز می‌کند."""
-    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    user_id_str = str(user_id)
-    
-    if user_id_str not in bot_data['users']:
-        bot_data['users'][user_id_str] = {
-            'first_seen': now_str,
-            'message_count': 0
-        }
-        bot_data['stats']['total_users'] += 1
-
-    bot_data['users'][user_id_str]['last_seen'] = now_str
-    bot_data['users'][user_id_str]['message_count'] += 1
-    bot_data['stats']['total_messages'] += 1
-    
-    admin_panel.save_data(bot_data)
-
+        logger.info(f"Task for user {user_id} was cancelled.")
 
 async def _process_user_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -93,8 +83,8 @@ async def _process_user_request(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text(response.choices[0].message.content)
         
         # --- تغییرات جدید ---
-        # پس از ارسال موفقیت‌آمیز پاسخ، آمار را به‌روز کن
-        update_user_stats(user_id, bot_data)
+        # پس از ارسال موفقیت‌آمیز پاسخ، آمار را با استفاده از مدیر داده به‌روز کن
+        data_manager.update_user_stats(user_id, update.effective_user)
 
     except httpx.TimeoutException:
         logger.warning(f"Request timed out for user {user_id}.")
@@ -109,8 +99,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = user.id
     
     # --- تغییرات جدید ---
-    # ثبت کاربر جدید در صورت اولین تماس
-    update_user_stats(user_id, bot_data)
+    # ثبت کاربر جدید با استفاده از مدیر داده
+    data_manager.update_user_stats(user_id, user)
     
     await update.message.reply_html(
         f"سلام {user.mention_html()}! 🤖\n\n"
@@ -123,10 +113,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id = update.effective_user.id
     
     # --- تغییرات جدید ---
-    # بررسی اینکه آیا کاربر مسدود شده است یا خیر
-    if user_id in bot_data['banned_users']:
+    # بررسی مسدود بودن کاربر با استفاده از مدیر داده
+    if data_manager.is_user_banned(user_id):
         logger.info(f"Banned user {user_id} tried to send a message.")
-        return # اگر مسدود بود، کاری نکن و پیام را پردازش نکن
+        return
 
     if user_id in user_tasks and not user_tasks[user_id].done():
         user_tasks[user_id].cancel()
