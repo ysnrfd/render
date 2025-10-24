@@ -5,7 +5,7 @@ import json
 import logging
 from datetime import datetime
 from telegram import Update
-from telegram.ext import ContextTypes
+from telegram.ext import ContextTypes, CommandHandler  # <-- خط اصلاح شده: CommandHandler اضافه شد
 from telegram.error import TelegramError
 
 # --- تنظیمات ---
