@@ -1,6 +1,7 @@
 # admin_panel.py
 
 import os
+import json  # <--- اصلاح شد: اضافه شدن import json
 import logging
 import csv
 import io
