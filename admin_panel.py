@@ -56,12 +56,13 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "✅ `/unban [آیدی]` - رفع مسدودیت کاربر\n"
         "💌 `/direct_message [آیدی] [پیام]` - ارسال پیام مستقیم به کاربر\n"
         "ℹ️ `/user_info [آیدی]` - نمایش اطلاعات کاربر\n"
-        "📝 `/logs` - نمایش لاگ‌های ربات\n"
+        "📝 `/logs` - نمایش آخرین لاگ‌ها\n"
+        "📂 `/logs_file` - دانلود فایل کامل لاگ‌ها\n"
         "👥 `/users_list [صفحه]` - نمایش لیست کاربران\n"
         "🔍 `/user_search [نام]` - جستجوی کاربر بر اساس نام\n"
         "💾 `/backup` - ایجاد نسخه پشتیبان از داده‌ها\n"
         "📊 `/export_csv` - دانلود اطلاعات کاربران در فایل CSV\n"
-        "🔧 `/maintenance_mode` - تغییر حالت نگهداری ربات\n"
+        "🔧 `/maintenance [on/off]` - فعال/غیرفعال کردن حالت نگهداری\n"
         "👋 `/set_welcome [پیام]` - تنظیم پیام خوشامدگویی\n"
         "👋 `/set_goodbye [پیام]` - تنظیم پیام خداحافظی\n"
         "📈 `/activity_heatmap` - دریافت نمودار فعالیت کاربران\n"
@@ -270,7 +271,7 @@ async def admin_remove_scheduled_broadcast(update: Update, context: ContextTypes
 
 @admin_only
 async def admin_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """یک کاربر را با آیدی عددی مسدود می‌کند."""
+    """یک کاربر را با آیدی عددی مسدود کرده و به او اطلاع می‌دهد."""
     if not context.args or not context.args[0].isdigit():
         await update.message.reply_text("⚠️ لطفاً آیدی عددی کاربر را وارد کنید.\nمثال: `/ban 123456789`")
         return
@@ -286,11 +287,21 @@ async def admin_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     data_manager.ban_user(user_id_to_ban)
+    
+    # ارسال پیام به کاربر مسدود شده
+    try:
+        await context.bot.send_message(
+            chat_id=user_id_to_ban, 
+            text="⛔️ شما توسط ادمین ربات مسدود شدید و دیگر نمی‌توانید از خدمات ربات استفاده کنید."
+        )
+    except TelegramError as e:
+        logger.warning(f"Could not send ban notification to user {user_id_to_ban}: {e}")
+
     await update.message.reply_text(f"✅ کاربر `{user_id_to_ban}` با موفقیت مسدود شد.", parse_mode='Markdown')
 
 @admin_only
 async def admin_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """مسدودیت یک کاربر را برمی‌دارد."""
+    """مسدودیت یک کاربر را برمی‌دارد و به او اطلاع می‌دهد."""
     if not context.args or not context.args[0].isdigit():
         await update.message.reply_text("⚠️ لطفاً آیدی عددی کاربر را وارد کنید.\nمثال: `/unban 123456789`")
         return
@@ -302,6 +313,16 @@ async def admin_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     data_manager.unban_user(user_id_to_unban)
+
+    # ارسال پیام به کاربر برای رفع مسدودیت
+    try:
+        await context.bot.send_message(
+            chat_id=user_id_to_unban, 
+            text="✅ مسدودیت شما توسط ادمین ربات برداشته شد. می‌توانید دوباره از ربات استفاده کنید."
+        )
+    except TelegramError as e:
+        logger.warning(f"Could not send unban notification to user {user_id_to_unban}: {e}")
+
     await update.message.reply_text(f"✅ مسدودیت کاربر `{user_id_to_unban}` با موفقیت برداشته شد.", parse_mode='Markdown')
 
 @admin_only
@@ -384,6 +405,19 @@ async def admin_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("فایل لاگ یافت نشد.")
     except Exception as e:
         await update.message.reply_text(f"خطایی در خواندن لاگ رخ داد: {e}")
+
+@admin_only
+async def admin_logs_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """فایل کامل لاگ ربات را ارسال می‌کند."""
+    try:
+        await update.message.reply_document(
+            document=open(data_manager.LOG_FILE, 'rb'),
+            caption="📂 فایل کامل لاگ‌های ربات"
+        )
+    except FileNotFoundError:
+        await update.message.reply_text("فایل لاگ یافت نشد.")
+    except Exception as e:
+        await update.message.reply_text(f"خطایی در ارسال فایل لاگ رخ داد: {e}")
 
 @admin_only
 async def admin_users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -517,17 +551,58 @@ async def admin_export_csv(update: Update, context: ContextTypes.DEFAULT_TYPE):
     os.unlink(temp_file_path)
 
 @admin_only
-async def admin_maintenance_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """تغییر حالت نگهداری ربات."""
-    current_mode = data_manager.DATA.get('maintenance_mode', False)
-    new_mode = not current_mode
+async def admin_maintenance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """حالت نگهداری ربات را فعال یا غیرفعال کرده و به کاربران اطلاع می‌دهد."""
+    if not context.args or context.args[0].lower() not in ['on', 'off']:
+        await update.message.reply_text("⚠️ فرمت صحیح: `/maintenance on` یا `/maintenance off`")
+        return
+
+    status = context.args[0].lower()
     
-    data_manager.DATA['maintenance_mode'] = new_mode
-    data_manager.save_data()
-    
-    status = "on" if new_mode else "off"
-    await update.message.reply_text(f"🔧 حالت نگهداری ربات {status} شد.\n"
-                                   f"در این حالت، ربات به پیام‌های کاربران عادی پاسخ نمی‌دهد.")
+    if status == 'on':
+        if data_manager.DATA.get('maintenance_mode', False):
+            await update.message.reply_text("🔧 ربات از قبل در حالت نگهداری قرار دارد.")
+            return
+            
+        data_manager.DATA['maintenance_mode'] = True
+        data_manager.save_data()
+        
+        await update.message.reply_text("✅ حالت نگهداری ربات فعال شد. در حال اطلاع‌رسانی به کاربران...")
+        
+        user_ids = list(data_manager.DATA['users'].keys())
+        for user_id_str in user_ids:
+            try:
+                # به ادمین‌ها پیام ارسال نشود
+                if int(user_id_str) not in ADMIN_IDS:
+                    await context.bot.send_message(
+                        chat_id=int(user_id_str), 
+                        text="🔧 ربات در حال حاضر در حالت به‌روزرسانی و نگهداری قرار دارد. لطفاً چند لحظه دیگر صبر کنید. از صبر شما سپاسگزاریم!"
+                    )
+                    await asyncio.sleep(0.05) # جلوگیری از محدودیت تلگرام
+            except TelegramError:
+                continue # نادیده گرفتن کاربرانی که ربات را مسدود کرده‌اند
+
+    elif status == 'off':
+        if not data_manager.DATA.get('maintenance_mode', False):
+            await update.message.reply_text("✅ ربات از قبل در حالت عادی قرار دارد.")
+            return
+
+        data_manager.DATA['maintenance_mode'] = False
+        data_manager.save_data()
+
+        await update.message.reply_text("✅ حالت نگهداری ربات غیرفعال شد. در حال اطلاع‌رسانی به کاربران...")
+
+        user_ids = list(data_manager.DATA['users'].keys())
+        for user_id_str in user_ids:
+            try:
+                if int(user_id_str) not in ADMIN_IDS:
+                    await context.bot.send_message(
+                        chat_id=int(user_id_str), 
+                        text="✅ به‌روزرسانی ربات به پایان رسید. از صبر شما سپاسگزاریم! می‌توانید دوباره از ربات استفاده کنید."
+                    )
+                    await asyncio.sleep(0.05)
+            except TelegramError:
+                continue
 
 @admin_only
 async def admin_set_welcome_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -770,6 +845,7 @@ def setup_admin_handlers(application):
     application.add_handler(CommandHandler("unban", admin_unban))
     application.add_handler(CommandHandler("user_info", admin_userinfo))
     application.add_handler(CommandHandler("logs", admin_logs))
+    application.add_handler(CommandHandler("logs_file", admin_logs_file)) # <--- هندلر جدید
     application.add_handler(CommandHandler("users_list", admin_users_list))
     application.add_handler(CommandHandler("user_search", admin_user_search))
     application.add_handler(CommandHandler("backup", admin_backup))
@@ -781,7 +857,7 @@ def setup_admin_handlers(application):
     application.add_handler(CommandHandler("remove_scheduled", admin_remove_scheduled_broadcast))
     application.add_handler(CommandHandler("direct_message", admin_direct_message))
     application.add_handler(CommandHandler("export_csv", admin_export_csv))
-    application.add_handler(CommandHandler("maintenance_mode", admin_maintenance_mode))
+    application.add_handler(CommandHandler("maintenance", admin_maintenance)) # <--- هندلر جایگزین شده
     application.add_handler(CommandHandler("set_welcome", admin_set_welcome_message))
     application.add_handler(CommandHandler("set_goodbye", admin_set_goodbye_message))
     application.add_handler(CommandHandler("activity_heatmap", admin_activity_heatmap))
