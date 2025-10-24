@@ -471,8 +471,11 @@ async def admin_user_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     matching_users = []
     for user_id, user_info in users.items():
-        first_name = user_info.get('first_name', '').lower()
-        username = user_info.get('username', '').lower()
+        # --- کد اصلاح شده ---
+        # استفاده از (value or '') برای جلوگیری از خطا در صورت وجود None
+        first_name = (user_info.get('first_name') or '').lower()
+        username = (user_info.get('username') or '').lower()
+        # --- پایان کد اصلاح شده ---
         
         if search_term in first_name or search_term in username:
             is_banned = "🚫" if int(user_id) in data_manager.DATA['banned_users'] else "✅"
@@ -485,12 +488,12 @@ async def admin_user_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     results_text = f"🔍 **نتایج جستجو برای «{search_term}»**\n\n"
     
     for user_id, user_info, is_banned in matching_users:
-        username = user_info.get('username', 'N/A')
-        first_name = user_info.get('first_name', 'N/A')
+        username_display = user_info.get('username', 'N/A') # برای نمایش نیازی به lower نیست
+        first_name_display = user_info.get('first_name', 'N/A') # برای نمایش نیازی به lower نیست
         last_seen = user_info.get('last_seen', 'N/A')
         message_count = user_info.get('message_count', 0)
         
-        results_text += f"{is_banned} `{user_id}` - {first_name} (@{username})\n"
+        results_text += f"{is_banned} `{user_id}` - {first_name_display} (@{username_display})\n"
         results_text += f"   پیام‌ها: `{message_count}` | آخرین فعالیت: `{last_seen}`\n\n"
     
     await update.message.reply_text(results_text, parse_mode='Markdown')
