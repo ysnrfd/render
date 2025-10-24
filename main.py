@@ -4,12 +4,12 @@ import os
 import logging
 import asyncio
 import httpx
+import time
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from openai import AsyncOpenAI
 from keep_alive import start_keep_alive
 
-# --- تغییرات جدید ---
 # وارد کردن مدیر داده‌ها و پنل ادمین
 import data_manager
 import admin_panel
@@ -18,7 +18,6 @@ import admin_panel
 start_keep_alive()
 
 # --- بهبود لاگینگ ---
-# استفاده از مسیر مطلق از data_manager
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", 
     level=logging.INFO,
@@ -27,15 +26,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# بررسی اینکه آیا لاگ می‌تواند نوشته شود یا نه
 try:
     with open(data_manager.LOG_FILE, 'a') as f:
         f.write("")
 except Exception as e:
     print(f"FATAL: Could not write to log file at {data_manager.LOG_FILE}. Error: {e}")
-    # در صورت عدم امکان نوشتن لاگ، به کنسول چاپ می‌کنیم
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-
 
 # --- ایجاد یک کلاینت HTTP بهینه‌سازی‌شده ---
 http_client = httpx.AsyncClient(
@@ -70,6 +66,8 @@ async def _process_user_request(update: Update, context: ContextTypes.DEFAULT_TY
     chat_id = update.effective_chat.id
     user_message = update.message.text
     user_id = update.effective_user.id
+    
+    start_time = time.time()
 
     try:
         await context.bot.send_chat_action(chat_id=chat_id, action="typing")
@@ -80,10 +78,12 @@ async def _process_user_request(update: Update, context: ContextTypes.DEFAULT_TY
             top_p=0.95,
             stream=False,
         )
-        await update.message.reply_text(response.choices[0].message.content)
         
-        # --- تغییرات جدید ---
-        # پس از ارسال موفقیت‌آمیز پاسخ، آمار را با استفاده از مدیر داده به‌روز کن
+        end_time = time.time()
+        response_time = end_time - start_time
+        data_manager.update_response_stats(response_time)
+        
+        await update.message.reply_text(response.choices[0].message.content)
         data_manager.update_user_stats(user_id, update.effective_user)
 
     except httpx.TimeoutException:
@@ -98,24 +98,32 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     user_id = user.id
     
-    # --- تغییرات جدید ---
-    # ثبت کاربر جدید با استفاده از مدیر داده
     data_manager.update_user_stats(user_id, user)
     
+    welcome_msg = data_manager.DATA.get('welcome_message', "سلام {user_mention}! 🤖\n\nمن یک ربات هوشمند هستم. هر سوالی دارید بپرسید.")
     await update.message.reply_html(
-        f"سلام {user.mention_html()}! 🤖\n\n"
-        f"من یک ربات هوشمند هستم. هر سوالی دارید بپرسید.\n"
-        f"توجه: درخواست‌های شما به صورت همزمان پردازش می‌شوند. "
-        f"اگر درخواست جدیدی بفرستید، پردازش قبلی لغو خواهد شد.",
+        welcome_msg.format(user_mention=user.mention_html()),
+        disable_web_page_preview=True
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     
-    # --- تغییرات جدید ---
-    # بررسی مسدود بودن کاربر با استفاده از مدیر داده
+    # بررسی مسدود بودن کاربر
     if data_manager.is_user_banned(user_id):
         logger.info(f"Banned user {user_id} tried to send a message.")
+        return
+    
+    # بررسی حالت نگهداری (فقط برای کاربران عادی)
+    if data_manager.DATA.get('maintenance_mode', False) and user_id not in admin_panel.ADMIN_IDS:
+        await update.message.reply_text("🔧 ربات در حال حاضر در حالت نگهداری قرار دارد. لطفاً بعداً تلاش کنید.")
+        return
+
+    # بررسی کلمات مسدود شده
+    if data_manager.contains_blocked_words(update.message.text):
+        logger.info(f"User {user_id} sent a message with a blocked word.")
+        # می‌توانید به کاربر اطلاع دهید یا پیام را نادیده بگیرید
+        # await update.message.reply_text("⚠️ پیام شما حاوی کلمات نامناسب است و ارسال نشد.")
         return
 
     if user_id in user_tasks and not user_tasks[user_id].done():
@@ -142,7 +150,6 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    # --- تغییرات جدید ---
     # راه‌اندازی و ثبت هندلرهای پنل ادمین
     admin_panel.setup_admin_handlers(application)
 
