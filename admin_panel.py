@@ -525,7 +525,7 @@ async def admin_maintenance_mode(update: Update, context: ContextTypes.DEFAULT_T
     data_manager.DATA['maintenance_mode'] = new_mode
     data_manager.save_data()
     
-    status = "روشن" if new_mode else "خاموش"
+    status = "on" if new_mode else "off"
     await update.message.reply_text(f"🔧 حالت نگهداری ربات {status} شد.\n"
                                    f"در این حالت، ربات به پیام‌های کاربران عادی پاسخ نمی‌دهد.")
 
