@@ -1,3 +1,5 @@
+# main.py
+
 import os
 import logging
 import asyncio
@@ -6,6 +8,10 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from openai import AsyncOpenAI
 from keep_alive import start_keep_alive
+
+# --- تغییرات مربوط به پنل مدیریت ---
+# هندلرهای مربوط به مدیریت را از فایل جداگانه وارد می‌کنیم
+from admin_panel import setup_admin_handlers
 
 # شروع سرویس نگه داشتن ربات فعال
 start_keep_alive()
@@ -41,16 +47,21 @@ client = AsyncOpenAI(
 )
 
 # --- دیکشنری برای مدیریت وظایف پس‌زمینه هر کاربر ---
-# {user_id: asyncio.Task}
-user_tasks = {}
+# این دیکشنری دیگر در این فایل به صورت مستقیم تعریف نمی‌شود
+# و در bot_data اپلیکیشن ذخیره می‌شود تا از فایل مدیریت نیز قابل دسترس باشد.
+# user_tasks = {} 
 
 # --- توابع کمکی برای مدیریت وظایف ---
 
-def _cleanup_task(task: asyncio.Task, user_id: int):
+def _cleanup_task(task: asyncio.Task, user_id: int, application):
     """
     این تابع پس از اتمام یک وظیفه (با موفقیت، خطا یا لغو) فراخوانی می‌شود
     تا ورودی مربوط به آن کاربر را از دیکشنری پاک کند.
     """
+    # --- تغییرات مربوط به پنل مدیریت ---
+    # دسترسی به user_tasks از طریق application
+    user_tasks = application.bot_data.get('user_tasks', {})
+
     if user_id in user_tasks and user_tasks[user_id] == task:
         del user_tasks[user_id]
         logger.info(f"Cleaned up finished task for user {user_id}.")
@@ -120,6 +131,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """
     user_id = update.effective_user.id
 
+    # --- تغییرات مربوط به پنل مدیریت ---
+    # دسترسی به user_tasks از طریق context
+    user_tasks = context.application.bot_data.get('user_tasks', {})
+
     # بررسی اینکه آیا وظیفه‌ای برای این کاربر در حال اجراست یا نه
     if user_id in user_tasks and not user_tasks[user_id].done():
         # یک وظیفه در حال اجراست. آن را لغو کرده و برای درخواست جدید شروع می‌کنیم.
@@ -133,7 +148,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_tasks[user_id] = task
 
     # اضافه کردن یک تابع callback که پس از اتمام وظیفه اجرا می‌شود
-    task.add_done_callback(lambda t: _cleanup_task(t, user_id))
+    # --- تغییرات مربوط به پنل مدیریت ---
+    # اپلیکیشن را به callback پاس می‌دهیم تا به user_tasks دسترسی داشته باشد
+    task.add_done_callback(lambda t: _cleanup_task(t, user_id, context.application))
 
 def main() -> None:
     """تابع اصلی برای اجرای ربات."""
@@ -150,8 +167,16 @@ def main() -> None:
         .build()
     )
 
+    # --- تغییرات مربوط به پنل مدیریت ---
+    # ذخیره دیکشنری user_tasks در bot_data تا از همه جا قابل دسترس باشد
+    application.bot_data['user_tasks'] = {}
+
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # --- تغییرات مربوط به پنل مدیریت ---
+    # ثبت تمام هندلرهای مربوط به مدیریت با یک فراخوانی ساده
+    setup_admin_handlers(application)
 
     port = int(os.environ.get("PORT", 8443))
     webhook_url = os.environ.get("RENDER_EXTERNAL_URL") + "/webhook"
