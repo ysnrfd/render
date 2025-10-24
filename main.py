@@ -3,15 +3,15 @@
 import os
 import logging
 import asyncio
-import httpx  # httpx را برای پیکربندی وارد می‌کنیم
+import httpx
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from openai import AsyncOpenAI
 from keep_alive import start_keep_alive
 
-# --- تغییرات مربوط به پنل مدیریت ---
-# هندلرهای مربوط به مدیریت را از فایل جداگانه وارد می‌کنیم
+# --- وارد کردن ماژول‌های سفارشی ---
 from admin_panel import setup_admin_handlers
+from data_store import update_user_stats, is_user_banned
 
 # شروع سرویس نگه داشتن ربات فعال
 start_keep_alive()
@@ -22,134 +22,121 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- ایجاد یک کلاینت HTTP بهینه‌سازی‌شده برای پایداری و سرعت بیشتر ---
-# این کلاینت به httpx اجازه می‌دهد تا از HTTP/2 استفاده کند و تعداد اتصالات را مدیریت کند
+# --- ایجاد یک کلاینت HTTP بهینه‌سازی‌شده ---
 http_client = httpx.AsyncClient(
-    http2=True,  # فعال‌سازی HTTP/2 برای افزایش سرعت و کارایی
-    limits=httpx.Limits(
-        max_keepalive_connections=20,  # تعداد اتصالاتی که برای استفاده‌های بعدی نگه داشته می‌شوند
-        max_connections=100,  # حداکثر تعداد کل اتصالات همزمان
-        keepalive_expiry=30.0  # مدت زمان نگهداری اتصال بدون استفاده (ثانیه)
-    ),
-    timeout=httpx.Timeout(
-        timeout=60.0,  # تایم‌اوت کلی برای کل درخواست
-        connect=10.0,  # تایم‌اوت برای برقراری اولیه اتصال
-        read=45.0,     # تایم‌اوت برای دریافت پاسخ از سرور
-        write=10.0     # تایم‌اوت برای ارسال درخواست به سرور
-    )
+    http2=True,
+    limits=httpx.Limits(max_keepalive_connections=20, max_connections=100, keepalive_expiry=30.0),
+    timeout=httpx.Timeout(timeout=60.0, connect=10.0, read=45.0, write=10.0)
 )
 
-# کلاینت OpenAI (HuggingFace) - با استفاده از کلاینت HTTP سفارشی
+# کلاینت OpenAI (HuggingFace)
 client = AsyncOpenAI(
     base_url="https://router.huggingface.co/v1",
     api_key=os.environ["HF_TOKEN"],
-    http_client=http_client  # معرفی کلاینت سفارشی به OpenAI
+    http_client=http_client
 )
 
-# --- دیکشنری برای مدیریت وظایف پس‌زمینه هر کاربر ---
-# این دیکشنری دیگر در این فایل به صورت مستقیم تعریف نمی‌شود
-# و در bot_data اپلیکیشن ذخیره می‌شود تا از فایل مدیریت نیز قابل دسترس باشد.
-# user_tasks = {} 
-
 # --- توابع کمکی برای مدیریت وظایف ---
-
 def _cleanup_task(task: asyncio.Task, user_id: int, application):
-    """
-    این تابع پس از اتمام یک وظیفه (با موفقیت، خطا یا لغو) فراخوانی می‌شود
-    تا ورودی مربوط به آن کاربر را از دیکشنری پاک کند.
-    """
-    # --- تغییرات مربوط به پنل مدیریت ---
-    # دسترسی به user_tasks از طریق application
+    """پس از اتمام یک وظیفه، آن را از لیست وظایف حذف می‌کند."""
     user_tasks = application.bot_data.get('user_tasks', {})
-
     if user_id in user_tasks and user_tasks[user_id] == task:
         del user_tasks[user_id]
         logger.info(f"Cleaned up finished task for user {user_id}.")
-
-    # بررسی خطاها، اما با نادیده گرفتن CancelledError که یک رفتار طبیعی است
     try:
         exception = task.exception()
         if exception:
-            logger.error(f"Background task for user {user_id} failed with an unexpected error: {exception}")
+            logger.error(f"Background task for user {user_id} failed: {exception}")
     except asyncio.CancelledError:
-        # این خطا طبیعی است و نیازی به لاگ کردن به عنوان خطا ندارد
-        logger.info(f"Task for user {user_id} was successfully cancelled by a newer request.")
-
+        logger.info(f"Task for user {user_id} was cancelled.")
 
 async def _process_user_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    این تابع اصلی پردازش درخواست است که در پس‌زمینه اجرا می‌شود.
-    """
+    """درخواست کاربر را پردازش کرده و پاسخ را برمی‌گرداند."""
     chat_id = update.effective_chat.id
     user_message = update.message.text
     user_id = update.effective_user.id
+    user_id_str = str(user_id)
+
+    # --- مدیریت تاریخچه چت (با محدودیت ۳ پیام) ---
+    chat_history = context.application.bot_data.get('chat_history', {})
+    if user_id_str not in chat_history:
+        chat_history[user_id_str] = []
+
+    # پیام کاربر را به تاریخچه اضافه کن
+    chat_history[user_id_str].append({"role": "user", "content": user_message})
 
     try:
-        # به کاربر اطلاع دهید که ربات در حال پردازش است
         await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+        
+        # خواندن تنظیمات از bot_data
+        bot_settings = context.application.bot_data.get('settings', {})
+        model = bot_settings.get('model', "huihui-ai/gemma-3-27b-it-abliterated:featherless-ai")
+        temperature = bot_settings.get('temperature', 0.7)
 
-        # دیگر نیازی به asyncio.wait_for نیست، زیرا تایم‌اوت در کلاینت HTTP تنظیم شده است
+        # ارسال کل تاریخچه به مدل
         response = await client.chat.completions.create(
-            model="huihui-ai/gemma-3-27b-it-abliterated:featherless-ai",
-            messages=[{"role": "user", "content": user_message}],
-            temperature=0.7,
+            model=model,
+            messages=chat_history[user_id_str],
+            temperature=temperature,
             top_p=0.95,
             stream=False,
         )
+        
+        bot_response = response.choices[0].message.content
+
+        # پاسخ ربات را به تاریخچه اضافه کن
+        chat_history[user_id_str].append({"role": "assistant", "content": bot_response})
+
+        # نکته کلیدی: فقط ۳ پیام آخر را نگه دار
+        if len(chat_history[user_id_str]) > 3:
+            chat_history[user_id_str] = chat_history[user_id_str][-3:]
 
         # ارسال پاسخ به کاربر
-        await update.message.reply_text(response.choices[0].message.content)
+        await update.message.reply_text(bot_response)
 
     except httpx.TimeoutException:
-        # این خطا زمانی رخ می‌دهد که یکی از تایم‌اوت‌های httpx منقضی شود
         logger.warning(f"Request timed out for user {user_id}.")
-        await update.message.reply_text(
-            "⏱️ ارتباط با سرور هوش مصنوعی طولانی شد. لطفاً دوباره تلاش کنید."
-        )
+        await update.message.reply_text("⏱️ ارتباط با سرور هوش مصنوعی طولانی شد. لطفاً دوباره تلاش کنید.")
     except Exception as e:
-        # این بلوک خطاهای مختلف از جمله خطاهای API (مانند 503) را مدیریت می‌کند
         logger.error(f"Error while processing message for user {user_id}: {e}")
-        await update.message.reply_text(
-            "❌ متاسفانه در پردازش درخواست شما مشکلی پیش آمد. لطفاً دوباره تلاش کنید."
-        )
+        await update.message.reply_text("❌ متاسفانه در پردازش درخواست شما مشکلی پیش آمد. لطفاً دوباره تلاش کنید.")
 
 # --- هندلرهای اصلی ربات ---
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """ارسال پیام خوشامدگویی."""
     user = update.effective_user
     await update.message.reply_html(
         f"سلام {user.mention_html()}! 🤖\n\n"
-        f"من یک ربات هوشمند هستم. هر سوالی دارید بپرسید.\n"
-        f"توجه: درخواست‌های شما به صورت همزمان پردازش می‌شوند. "
-        f"اگر درخواست جدیدی بفرستید، پردازش قبلی لغو خواهد شد.",
+        f"من یک ربات هوشمند هستم. هر سوالی دارید بپرسید."
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    این هندلر پیام‌ها را دریافت کرده و وظیفه پردازش را به پس‌زمینه محول می‌کند.
-    """
+    """پیام‌های کاربران را مدیریت می‌کند."""
     user_id = update.effective_user.id
+    
+    # 1. بررسی بن بودن کاربر
+    if is_user_banned(user_id):
+        logger.info(f"Banned user {user_id} tried to use the bot.")
+        return
 
-    # --- تغییرات مربوط به پنل مدیریت ---
-    # دسترسی به user_tasks از طریق context
+    # 2. بررسی حالت تعمیرات
+    if context.application.bot_data.get('maintenance_mode', False):
+        from admin_panel import is_admin 
+        if not is_admin(user_id):
+            await update.message.reply_text("🛠️ ربات در حال حاضر در حالت تعمیرات است. لطفاً بعداً تلاش کنید.")
+            return
+
+    # به‌روزرسانی آمار کاربر
+    update_user_stats(user_id, update.effective_user.username)
+    
+    # پردازش پیام
     user_tasks = context.application.bot_data.get('user_tasks', {})
-
-    # بررسی اینکه آیا وظیفه‌ای برای این کاربر در حال اجراست یا نه
     if user_id in user_tasks and not user_tasks[user_id].done():
-        # یک وظیفه در حال اجراست. آن را لغو کرده و برای درخواست جدید شروع می‌کنیم.
         user_tasks[user_id].cancel()
-        logger.info(f"Cancelled previous task for user {user_id} to start a new one.")
+        logger.info(f"Cancelled previous task for user {user_id}.")
 
-    # ایجاد یک وظیفه جدید در پس‌زمینه برای پردازش درخواست
     task = asyncio.create_task(_process_user_request(update, context))
-
-    # ذخیره وظیفه جدید برای کاربر
     user_tasks[user_id] = task
-
-    # اضافه کردن یک تابع callback که پس از اتمام وظیفه اجرا می‌شود
-    # --- تغییرات مربوط به پنل مدیریت ---
-    # اپلیکیشن را به callback پاس می‌دهیم تا به user_tasks دسترسی داشته باشد
     task.add_done_callback(lambda t: _cleanup_task(t, user_id, context.application))
 
 def main() -> None:
@@ -159,24 +146,21 @@ def main() -> None:
         logger.error("BOT_TOKEN not set in environment variables!")
         return
 
-    # ساخت اپلیکیشن با فعال‌سازی پردازش همزمان به‌روزرسانی‌ها برای کاربران مختلف
-    application = (
-        Application.builder()
-        .token(token)
-        .concurrent_updates(True)
-        .build()
-    )
-
-    # --- تغییرات مربوط به پنل مدیریت ---
-    # ذخیره دیکشنری user_tasks در bot_data تا از همه جا قابل دسترس باشد
+    application = Application.builder().token(token).concurrent_updates(True).build()
+    
+    # مقداردهی اولیه داده‌های ربات در bot_data
     application.bot_data['user_tasks'] = {}
+    application.bot_data['maintenance_mode'] = False
+    application.bot_data['settings'] = {
+        'model': "huihui-ai/gemma-3-27b-it-abliterated:featherless-ai",
+        'temperature': 0.7
+    }
+    application.bot_data['chat_history'] = {}
 
+    # ثبت هندلرها
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    # --- تغییرات مربوط به پنل مدیریت ---
-    # ثبت تمام هندلرهای مربوط به مدیریت با یک فراخوانی ساده
-    setup_admin_handlers(application)
+    setup_admin_handlers(application) # ثبت هندلرهای مدیریت
 
     port = int(os.environ.get("PORT", 8443))
     webhook_url = os.environ.get("RENDER_EXTERNAL_URL") + "/webhook"
