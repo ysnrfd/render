@@ -21,7 +21,8 @@ except KeyError:
     sys.exit(1)
 
 # --- حالت‌های مکالمه برای ویژگی‌های تعاملی ---
-(CHANGE_TEMP, CHANGE_MODEL, BROADCAST_MSG, DM_USER_MSG) = range(5)
+# --- اصلاح شده: range(5) به range(4) تغییر یافت ---
+(CHANGE_TEMP, CHANGE_MODEL, BROADCAST_MSG, DM_USER_MSG) = range(4)
 
 # --- داده‌های محلی پنل مدیریت ---
 admin_sessions = {}
