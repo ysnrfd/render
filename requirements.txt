@@ -1,4 +1,4 @@
-python-telegram-bot[webhooks]
+python-telegram-bot[job-queue]
 openai
 requests
 huggingface_hub
